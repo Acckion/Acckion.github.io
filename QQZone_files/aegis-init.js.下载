@@ -1,0 +1,284 @@
+(function () {
+    if (!window.Aegis) {
+        return
+    }
+    var DEFAULT_UID = '10000';
+    var SYSTEM_RETCODE_MAPPING = {
+        RESPONSE_CONTENT_EMPTY: -9992,
+        RESPONSE_CONTENT_UNKNOWN: -9993,
+        RESPONSE_PARSE_ERROR: -9994,
+        RESPONSE_PARSE_EMPTY: -9995,
+        NON_STANDARD_RETCODE: -9996
+    }
+
+    var aegisUid = DEFAULT_UID;
+    var offlineLog = true;
+    try {
+        aegisUid = getCookie('p_uin') || DEFAULT_UID;
+    } catch (err) { }
+
+    if (!window.Promise) {
+        offlineLog = false
+    }
+    console.log('aegisUid: ', aegisUid);
+    var url = "https://galileotelemetry.tencent.com/collect"; // 伽利略上报地址，不变
+    var id = 'SDK-6808b67c12d7d788daab'; // 需改成得到的token
+    var aegisOptions = {
+        id, // 项目ID，即上报id
+        hostUrl: { url },
+        urlHandler: qzonePageUrlHandler,
+        onBeforeSend: function (data) {
+            if(!data) return data;
+            if(data.length <=0){
+                return data;
+            }
+            const result = [];
+            for(var i=0;i<data.length;i++){
+                var item = data[i]
+                // 过滤一些不必要上报的log,先统一放在这里
+                if(item.url){
+                    if(item.level === 'error' && item.url.indexOf('about:blank')>-1){
+                        continue;
+                    }
+                    if(item.url === 'about:blank'){
+                        continue;
+                    }
+                    if(item.url.indexOf('h5.qzone.qq.com/log/post') > -1){
+                        continue;
+                    }
+                }
+                result.push(item);
+            }
+            return result;
+        },
+        plugin: {
+            pv: true, // 默认开启pv收集器
+            aid: true, // 默认开启aid收集器
+            error: true, // 默认开启error收集器
+            device: true, // 默认开启device收集器
+            close: true, // 默认开启close收集器
+            pagePerformance: true, // 默认开启pagePerformance收集器
+            webVitals: true, // 默认开启webVitals收集器
+            session: true,
+            fId: false, // 默认关闭fId指纹插件
+            ie: true, // 默认关闭ie兼容插件
+            spa: false, // 默认关闭spa 上报插件
+            api: {
+                retCodeHandler: qzoneRetCodeHandler,
+                resourceTypeHandler: qzoneResourceTypeHandler
+            }, // 默认关闭api数据收集插件
+            apiSpeed: true, // 默认关闭api测速插件
+            assetSpeed: true, // 默认关闭资源测速插件
+        },
+    }
+    console.log('aegisOptions:', aegisOptions)
+    window.g_aegis = new Aegis(aegisOptions)
+    window.g_qzoneRetCodeHandler = qzoneRetCodeHandler;
+    window.g_qzoneUrlHandler = qzonePageUrlHandler;
+    // 初始化逻辑结束
+
+    // public method
+    function qzoneResourceTypeHandler(data) {
+        // proxy/domain 的接口要修正下类型
+        if (data.indexOf('/proxy/domain/') > -1) {
+            if (data.indexOf('/qzonestyle.gtimg.cn/') > -1 || data.indexOf('/qzs.qq.com/') > -1 || data.indexOf('/qzs.qzone.qq.com/') > -1) {
+                return 'static'
+            }
+            return 'fetch';
+        }
+        return 'static'
+    }
+
+
+    function qzonePageUrlHandler() {
+        var hostname = window.location.hostname;
+        if (hostname == 'rc.qzone.qq.com') {
+            // rc 域名的处理
+            if (/https:\/\/rc\.qzone\.qq\.com\/\d+/.test(window.location.href)) {
+                return "rc.qzone.qq.com/:appid";
+            }
+            if (/https:\/\/rc\.qzone\.qq\.com\/myhome\/\d+/.test(window.location.href)) {
+                return "rc.qzone.qq.com/myhome/:appid";
+            }
+            if (/https:\/\/rc\.qzone\.qq\.com\/main\/\d+/.test(window.location.href)) {
+                return "rc.qzone.qq.com/main/:appid";
+            }
+            return window.location.hostname + window.location.pathname.replace(/\d+/g, ':num')
+        }
+        if (hostname == 'user.qzone.qq.com') {
+            // user域名的处理
+            if (/https:\/\/user\.qzone\.qq\.com\/\d+\/blog\/\d+/.test(window.location.href)) {
+                return "user.qzone.qq.com/:uin/blog/:blogid";
+            }
+            if (/https:\/\/user\.qzone\.qq\.com\/\d+\/311\/[\d\w]+/.test(window.location.href)) {
+                return "user.qzone.qq.com/:uin/311/:moodid";
+            }
+            if (/https:\/\/user\.qzone\.qq\.com\/\d+\/infocenter/.test(window.location.href)) {
+                return "user.qzone.qq.com/:uin/infocenter";
+            }
+            if (/https:\/\/user\.qzone\.qq\.com\/\d+\/main/.test(window.location.href)) {
+                return "user.qzone.qq.com/:uin/main";
+            }
+            if (/https:\/\/user\.qzone\.qq\.com\/\d+\/\d+/.test(window.location.href)) {
+                return "user.qzone.qq.com/:uin/" + (window.g_app_identifier || 'unknown_app_id');
+            }
+            if (/https:\/\/user\.qzone\.qq\.com\/\d+/.test(window.location.href)) {
+                return "user.qzone.qq.com/:uin";
+            }
+        }
+        return (window.location.hostname + window.location.pathname).replace(/\d+/g, ':num')
+    }
+    /**
+     * 自定义非标准的cgi返回
+     */
+    var nonStandardResponseAPIRetCodeHandlerMapping = {
+        'r.qzone.qq.com/cgi-bin/tfriend/cgi_like_get_following_list': function (data) {
+            if (data.items !== undefined) {
+                return {
+                    isErr: 0,
+                    code: 0
+                }
+            }
+            return {
+                isErr: 1,
+                code: SYSTEM_RETCODE_MAPPING.RESPONSE_CONTENT_UNKNOWN
+            }
+        },
+        'g.qzone.qq.com/fcg-bin/cgi_emotion_list.fcg': function (data) {
+            var matchedResult = data.match(/<result type="(\d+)">/);
+            var code = matchedResult[1]
+            return {
+                isErr: 0,
+                code: code
+            }
+        }
+    }
+
+    function qzoneRetCodeHandler(data, url) {
+        if (!data) return {
+            isErr: 1,
+            code: SYSTEM_RETCODE_MAPPING.RESPONSE_CONTENT_EMPTY
+        }
+
+
+        if (typeof data === 'object') {
+            return transformResponseDataToAegisResult(data, url);
+        }
+        var formatedResponseText;
+        if (isFormSenderText(data)) {
+            formatedResponseText = processFormSenderText(data);
+        } else if (isJSONGetterText(data,url)) {
+            formatedResponseText = processJSONGetterText(data,url);
+        } else if (url.indexOf('.js') === url.length - 3) {
+            //js文件走了xhr加载，不用判断返回码
+            return {
+                isErr: false,
+                code: 0
+            }
+        } else {
+            // 走到这个分支的，基本就得提前处理了
+            var apiURI = removeQueryString(removeProxyDomainPrefix(url));
+            var nonStandardResponseAPIRetCodeHandler = nonStandardResponseAPIRetCodeHandlerMapping[apiURI];
+            if (nonStandardResponseAPIRetCodeHandler) return nonStandardResponseAPIRetCodeHandler(data)
+
+            return { isErr: 0, code: SYSTEM_RETCODE_MAPPING.RESPONSE_PARSE_EMPTY }
+        }
+
+
+        var parsedData
+        try {
+            parsedData = eval("(" + formatedResponseText + ")");
+        } catch (err) {
+            return {
+                isErr: 1,
+                code: SYSTEM_RETCODE_MAPPING.RESPONSE_PARSE_ERROR
+            }
+        }
+        var result = transformResponseDataToAegisResult(parsedData, url);
+        return result
+    }
+
+    function removeQueryString(url) {
+        if (!url) return url;
+        var questionMarkIndex = url.indexOf('?')
+        if (questionMarkIndex == -1) return url;
+        return url.slice(0, questionMarkIndex);
+
+    }
+
+    function removeProxyDomainPrefix(url) {
+        return url.replace('https://' + location.hostname + '/proxy/domain/', '');
+    }
+
+    function isFormSenderText(text) {
+        if (!text) return false;
+        return text.indexOf('frameElement.callback(') > -1;
+    }
+
+    function isJSONGetterText(text, url) {
+        if (!text) return false;
+        var result = false;
+        var str = text.replace(/\n/g, '');
+        result = str.indexOf('_Callback({') > -1 || str.indexOf('callback({') > -1;
+        // 有些接口会通过callback参数来指定回调的名字
+        if(!result && url.indexOf('callback=')>-1){
+            var callbackName = getParameter(url,'callback');
+            result = str.indexOf(callbackName+'({')>-1
+        }
+        return result;
+    }
+
+    function processJSONGetterText(text) {
+        if (!text) return false;
+        var str = text.replace(/\n/g, '');
+        return str.substring(text.indexOf('(') + 1, str.lastIndexOf(')'));
+    }
+
+    function processFormSenderText(str) {
+        if (str.indexOf('<script') > -1) {
+            var lidx = str.lastIndexOf(')'), rst = str.substring(str.indexOf('.callback(') + 10, lidx == -1 ? str.length : lidx);
+            return rst;
+        }
+        return '{}';
+    }
+
+    /**
+    * β 增加新接口 获取通过URL传递的参数值
+    * @param {String} name 参数的名称
+    */
+    var getParameter = function(url, name){
+        var r = new RegExp("(\\?|#|&)" + name + "=([^&#]*)(&|#|$)"),
+            m = url.match(r);
+        return (!m ? "" : m[2]);
+    }
+    //
+
+    /**
+     * 如果某个cgi的返回码需要标记为逻辑失败，可以在这里配置，key为url（不包含proxy/domain/），value是一个数组，数组的每个元素是一个错误码
+     * w.qzone.qq.com/cgi-bin/likes/internal_dolike_app : [1,2,3]
+     */
+    var failedAPIAndRetCodesMapping = {
+    }
+
+    function transformResponseDataToAegisResult(data, url) {
+
+        //如果有接口的错误码需要特殊识别出来，标记为业务失败，就可以在这里配置
+        if (data.code === undefined) {
+            return { isErr: true, code: SYSTEM_RETCODE_MAPPING.NON_STANDARD_RETCODE }
+        }
+        var isErr = false;
+        var key = url.replace('https://' + location.hostname + '/proxy/domain/', '') || '';
+        var failedRetCodes = failedAPIAndRetCodesMapping[key.split('?')[0]]
+        for (var i = 0; failedRetCodes && i < failedRetCodes.length; i++) {
+            if (failedRetCodes[i] == data.code) {
+                isErr = true;
+            }
+        }
+        return {
+            isErr: isErr, // 
+            code: data.code
+
+        }
+    }
+    function getCookie(n) { var r = new RegExp("(?:^|;+|\\s+)" + n + "=([^;]*)"), m = document.cookie.match(r); return (!m ? "" : m[1]); }
+})();
